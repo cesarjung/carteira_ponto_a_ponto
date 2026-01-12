@@ -57,7 +57,7 @@ LISTA_PROJETOS_FILENAMES_TRY = [
 
 CSV_FINAL_NAME = "modelo_imp_ativ_obra_lote.csv"
 
-ATIV_SHEET = "ATIVIDADES_POR_PONTO_BASE_BASE"
+ATIV_SHEET = "ATIVIDADES_POR_PONTO_BASE"
 RANGE_COL_I = f"{ATIV_SHEET}!K2:K"
 RANGE_COL_D = f"{ATIV_SHEET}!D2:D"
 RANGE_COL_G = f"{ATIV_SHEET}!G2:G"
@@ -437,7 +437,7 @@ def main():
 
     planilhas_origem = ler_planilhas_origem_bd_config(sheets_service)
 
-    log("\n🔎 Consultando ATIVIDADES_POR_PONTO_BASE_BASE nas planilhas listadas...")
+    log("\n🔎 Consultando ATIVIDADES_POR_PONTO_BASE nas planilhas listadas...")
     linhas_csv = [CSV_HEADER_FINAL]
 
     encontrados_total = 0
