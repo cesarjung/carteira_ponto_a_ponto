@@ -6,7 +6,7 @@ OBJETIVO:
 - Gerar e enviar (overwrite/update) o CSV: modelo_imp_ativ_obra_lote.csv
 
 MAPEAMENTO (aba ATIVIDADES_POR_PONTO):
-- Coluna A do CSV = Projeto     <- Coluna I
+- Coluna A do CSV = Projeto     <- Coluna K
 - Coluna B do CSV = Atividade   <- Coluna D
 - Coluna C do CSV = Quantidade  <- Coluna G
 
@@ -58,7 +58,7 @@ LISTA_PROJETOS_FILENAMES_TRY = [
 CSV_FINAL_NAME = "modelo_imp_ativ_obra_lote.csv"
 
 ATIV_SHEET = "ATIVIDADES_POR_PONTO"
-RANGE_COL_I = f"{ATIV_SHEET}!I2:I"
+RANGE_COL_I = f"{ATIV_SHEET}!K2:K"
 RANGE_COL_D = f"{ATIV_SHEET}!D2:D"
 RANGE_COL_G = f"{ATIV_SHEET}!G2:G"
 
