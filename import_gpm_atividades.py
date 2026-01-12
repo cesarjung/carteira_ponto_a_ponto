@@ -6,7 +6,7 @@ OBJETIVO:
 - Gerar e enviar (overwrite/update) o CSV: modelo_imp_ativ_obra_lote.csv
 
 MAPEAMENTO (aba ATIVIDADES_POR_PONTO):
-- Coluna A do CSV = Projeto     <- Coluna I
+- Coluna A do CSV = Projeto     <- Coluna K
 - Coluna B do CSV = Atividade   <- Coluna D
 - Coluna C do CSV = Quantidade  <- Coluna G
 
