@@ -6,6 +6,7 @@ ALTERAÇÕES:
 1) CSV final SEMPRE salvo como: modelo_materiais_lote.csv
 2) Se já existir no Drive com mesmo nome: FAZ UPDATE (overwrite) no mesmo arquivo
 3) Lista de projetos vem SEMPRE do arquivo "modelo_importar_obras_ponto" no Drive
+4) Ao final grava timestamp em BD_Config!C4 da planilha informada
 
 AJUSTE PARA GITHUB:
 - Lê credenciais do Secret GOOGLE_CREDENTIALS (JSON) se existir
@@ -19,11 +20,17 @@ import io
 import re
 import time
 import random
+from datetime import datetime
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 
 # ===================== CONFIG =====================
@@ -31,7 +38,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 SERVICE_ACCOUNT_FILE = os.path.join(os.path.dirname(__file__), "credenciais.json")
 
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
@@ -54,6 +61,10 @@ RANGE_COL_C = f"{MATERIAIS_SHEET}!C2:C"
 RANGE_COL_E = f"{MATERIAIS_SHEET}!E2:E"
 
 CSV_HEADER_FINAL = ["Projeto", "Material", "Quantidade"]
+
+TIMESTAMP_SPREADSHEET_ID = "1-_lTKT4wSDlJtTXkF1tLHstV9h-S3Yq_2cE8jOIC3kI"
+TIMESTAMP_RANGE = "BD_Config!C4"
+TIMEZONE_NAME = "America/Sao_Paulo"
 
 
 # ===================== UTIL =====================
@@ -153,6 +164,35 @@ def write_csv_local(rows, filename: str) -> str:
         writer = csv.writer(f, delimiter=";")
         writer.writerows(rows)
     return filepath
+
+
+def get_now_sp():
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo(TIMEZONE_NAME))
+    return datetime.now()
+
+
+def write_timestamp_bd_config(sheets_service):
+    agora = get_now_sp().strftime("%d/%m/%Y %H:%M:%S")
+    body = {
+        "values": [[agora]]
+    }
+
+    def _call():
+        return (
+            sheets_service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=TIMESTAMP_SPREADSHEET_ID,
+                range=TIMESTAMP_RANGE,
+                valueInputOption="USER_ENTERED",
+                body=body
+            )
+            .execute()
+        )
+
+    retry(_call)
+    print(f"🕒 Timestamp gravado em {TIMESTAMP_RANGE}: {agora}")
 
 
 # ===================== DRIVE =====================
@@ -449,13 +489,13 @@ def main():
     csv_path = write_csv_local(linhas_csv, CSV_FINAL_NAME)
 
     print("\n================= RESUMO =================")
-    print(f"Lista usada:               {rel_name}")
-    print(f"Planilhas OK:              {planilhas_ok}")
-    print(f"Planilhas com erro:        {planilhas_erro}")
-    print(f"Projetos na lista:         {len(projetos)}")
-    print(f"Projetos encontrados:      {len(projetos_encontrados)}")
-    print(f"Linhas (itens) encontradas:{encontrados_total}")
-    print(f"CSV local:                 {csv_path}")
+    print(f"Lista usada:                {rel_name}")
+    print(f"Planilhas OK:               {planilhas_ok}")
+    print(f"Planilhas com erro:         {planilhas_erro}")
+    print(f"Projetos na lista:          {len(projetos)}")
+    print(f"Projetos encontrados:       {len(projetos_encontrados)}")
+    print(f"Linhas (itens) encontradas: {encontrados_total}")
+    print(f"CSV local:                  {csv_path}")
 
     print("\n♻️ Garantindo arquivo único no Drive (overwrite/update)...")
     file_id = drive_upload_or_update_unique_csv(
@@ -465,6 +505,9 @@ def main():
         CSV_FINAL_NAME
     )
     print(f"✅ Concluído. FileID final: {file_id}")
+
+    print("\n🕒 Gravando timestamp em BD_Config!C4...")
+    write_timestamp_bd_config(sheets_service)
 
     nao = sorted(list(set_projetos - projetos_encontrados))
     if nao:
