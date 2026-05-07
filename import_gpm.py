@@ -2,20 +2,20 @@
 """
 Script para gerar o 1º CSV e enviar para o Google Drive, SEM salvar arquivo local.
 
-Regras lógicas (mantidas):
+Regras lógicas:
 1) bases_validas = Carteira!B6:B ∩ BD_Obras_GPM!B2:B
 2) Parte 1: códigos <base9>_VIST, _P0, _LPT que não existam em BD_Obras_GPM!A2:A
 3) Parte 2: códigos de ATIVIDADES_POR_PONTO_BASE!K2:K que não estejam em Obras.A
-4) Exclusões por Carteira (D/U/AX/AY)
+4) Exclusões por Carteira (D/U/AX/AY), agora com log detalhado do motivo
 5) Lookup Config normalizado
 6) Encoding utf-8-sig para Excel não quebrar acentos ("NÃO" etc.)
-7) Envia DIRETO para a pasta do Drive (ID: 1r2-jH6hF5jtaO7UVq7HnYX9Vquod6YDB)
+7) Envia DIRETO para a pasta do Drive
 
 Não é criado nenhum .csv no disco local.
 
 AJUSTE PARA GITHUB:
 - Lê credenciais do Secret GOOGLE_CREDENTIALS (JSON) se existir
-- Caso contrário, usa credenciais.json local (para rodar no PC também)
+- Caso contrário, usa credenciais.json local
 """
 
 import os
@@ -75,6 +75,16 @@ CSV_HEADER = [
 CSV_FIXED_NAME = "modelo_importar_obras_ponto.csv"
 
 
+# =============== LOG DE EXCLUSÕES ===============
+
+LOGAR_EXCLUSOES_DETALHADO = True
+
+# Defina como None para exibir todas as bases excluídas no log.
+# Exemplo:
+# LIMITE_LOG_EXCLUSOES = None
+LIMITE_LOG_EXCLUSOES = 300
+
+
 # =============== AUTH ===============
 
 def _load_credentials():
@@ -84,12 +94,15 @@ def _load_credentials():
     2) credenciais.json local
     """
     env_json = os.environ.get("GOOGLE_CREDENTIALS", "").strip()
+
     if env_json:
         info = json.loads(env_json)
         return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
-    # fallback local
-    return service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    return service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE,
+        scopes=SCOPES
+    )
 
 
 # =============== NORMALIZAÇÃO DE CHAVES ===============
@@ -97,18 +110,22 @@ def _load_credentials():
 def normalizar_chave(valor) -> str:
     if valor is None:
         return ""
+
     s = str(valor)
     s = s.replace("\u00A0", " ").replace("\u200B", " ").strip()
     s = re.sub(r"\s+", " ", s)
+
     if re.fullmatch(r"-?\d+\.0+", s):
         s = s.split(".", 1)[0]
+
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = s.upper().strip()
+
     return s
 
 
-# =============== FUNÇÕES AUXILIARES (Sheets) ===============
+# =============== FUNÇÕES AUXILIARES ===============
 
 def get_services():
     creds = _load_credentials()
@@ -124,34 +141,41 @@ def read_single_column(sheets_service, spreadsheet_id: str, range_a1: str):
         .get(spreadsheetId=spreadsheet_id, range=range_a1)
         .execute()
     )
+
     values = result.get("values", [])
     col = []
+
     for row in values:
         if not row:
             continue
+
         val = str(row[0]).strip()
+
         if val != "":
             col.append(val)
+
     return col
 
 
 def read_carteira_info(sheets_service):
     ranges = [
-        "Carteira!B6:B",   # 0
-        "Carteira!AA6:AA", # 1
-        "Carteira!Y6:Y",   # 2
-        "Carteira!W6:W",   # 3
-        "Carteira!Z6:Z",   # 4
-        "Carteira!BX6:BX", # 5
-        "Carteira!AX6:AX", # 6
-        "Carteira!AY6:AY", # 7
+        "Carteira!B6:B",    # 0 - Código/base da obra
+        "Carteira!AA6:AA",  # 1 - Título
+        "Carteira!Y6:Y",    # 2 - Município
+        "Carteira!W6:W",    # 3 - Chave Config
+        "Carteira!Z6:Z",    # 4 - Tipo de obra
+        "Carteira!BX6:BX",  # 5 - Natureza
+        "Carteira!AX6:AX",  # 6 - Latitude
+        "Carteira!AY6:AY",  # 7 - Longitude
     ]
+
     resp = (
         sheets_service.spreadsheets()
         .values()
         .batchGet(spreadsheetId=ID_CARTEIRA, ranges=ranges)
         .execute()
     )
+
     vrs = resp.get("valueRanges", [])
 
     def get_col(idx):
@@ -159,11 +183,11 @@ def read_carteira_info(sheets_service):
             return []
         return vrs[idx].get("values", [])
 
-    col_b  = get_col(0)
+    col_b = get_col(0)
     col_aa = get_col(1)
-    col_y  = get_col(2)
-    col_w  = get_col(3)
-    col_z  = get_col(4)
+    col_y = get_col(2)
+    col_w = get_col(3)
+    col_z = get_col(4)
     col_bx = get_col(5)
     col_ax = get_col(6)
     col_ay = get_col(7)
@@ -181,17 +205,19 @@ def read_carteira_info(sheets_service):
 
     for i in range(len(col_b)):
         cod = get_val(col_b, i)
+
         if cod == "":
             continue
+
         base9 = cod[:9]
 
-        titulo    = get_val(col_aa, i)
+        titulo = get_val(col_aa, i)
         municipio = get_val(col_y, i)
-        w         = get_val(col_w, i)
+        w = get_val(col_w, i)
         tipo_obra = get_val(col_z, i)
-        natureza  = get_val(col_bx, i)
-        lat       = get_val(col_ax, i)
-        lon       = get_val(col_ay, i)
+        natureza = get_val(col_bx, i)
+        lat = get_val(col_ax, i)
+        lon = get_val(col_ay, i)
 
         lista_carteira_b.append(cod)
 
@@ -210,6 +236,25 @@ def read_carteira_info(sheets_service):
 
 
 def read_carteira_base9_excluidas(sheets_service):
+    """
+    Lê a Carteira e identifica quais bases devem ser excluídas do CSV final.
+
+    Critérios:
+    - Carteira!D = OBRA RETIRADA
+    - Carteira!U = CONCLUÍDA
+    - Carteira!AX vazia
+    - Carteira!AY vazia
+
+    Retorna um dicionário:
+    {
+        "B-1250031": {
+            "codigo_original": "B-1250031",
+            "linha_carteira": 123,
+            "motivos": set([...])
+        }
+    }
+    """
+
     ranges = [
         "Carteira!B6:B",
         "Carteira!D6:D",
@@ -217,16 +262,19 @@ def read_carteira_base9_excluidas(sheets_service):
         "Carteira!AX6:AX",
         "Carteira!AY6:AY",
     ]
+
     resp = (
         sheets_service.spreadsheets()
         .values()
         .batchGet(spreadsheetId=ID_CARTEIRA, ranges=ranges)
         .execute()
     )
+
     vrs = resp.get("valueRanges", [])
-    col_b  = vrs[0].get("values", []) if len(vrs) > 0 else []
-    col_d  = vrs[1].get("values", []) if len(vrs) > 1 else []
-    col_u  = vrs[2].get("values", []) if len(vrs) > 2 else []
+
+    col_b = vrs[0].get("values", []) if len(vrs) > 0 else []
+    col_d = vrs[1].get("values", []) if len(vrs) > 1 else []
+    col_u = vrs[2].get("values", []) if len(vrs) > 2 else []
     col_ax = vrs[3].get("values", []) if len(vrs) > 3 else []
     col_ay = vrs[4].get("values", []) if len(vrs) > 4 else []
 
@@ -238,18 +286,47 @@ def read_carteira_base9_excluidas(sheets_service):
             return ""
         return str(row[0]).strip()
 
-    excluidas = set()
+    exclusoes = {}
+
     for i in range(len(col_b)):
         b = get_val(col_b, i)
+
         if b == "":
             continue
+
+        base9 = b[:9]
+
         status_d = get_val(col_d, i).upper()
         status_u = get_val(col_u, i).upper()
         lat = get_val(col_ax, i)
         lon = get_val(col_ay, i)
-        if status_d == "OBRA RETIRADA" or status_u == "CONCLUÍDA" or lat == "" or lon == "":
-            excluidas.add(b[:9])
-    return excluidas
+
+        motivos = []
+
+        if status_d == "OBRA RETIRADA":
+            motivos.append("Carteira!D = OBRA RETIRADA")
+
+        if status_u == "CONCLUÍDA":
+            motivos.append("Carteira!U = CONCLUÍDA")
+
+        if lat == "":
+            motivos.append("Carteira!AX sem latitude")
+
+        if lon == "":
+            motivos.append("Carteira!AY sem longitude")
+
+        if motivos:
+            if base9 not in exclusoes:
+                exclusoes[base9] = {
+                    "codigo_original": b,
+                    "linha_carteira": i + 6,
+                    "motivos": set(),
+                }
+
+            for motivo in motivos:
+                exclusoes[base9]["motivos"].add(motivo)
+
+    return exclusoes
 
 
 def read_config_map(sheets_service):
@@ -259,24 +336,31 @@ def read_config_map(sheets_service):
         .get(spreadsheetId=ID_CARTEIRA, range="Config!L2:O")
         .execute()
     )
+
     rows = result.get("values", [])
     config_map = {}
+
     for row in rows:
         if not row:
             continue
+
         chave_raw = str(row[0]).strip() if len(row) > 0 else ""
         chave = normalizar_chave(chave_raw)
+
         if chave == "":
             continue
-        contrato_nome  = str(row[1]).strip() if len(row) > 1 else ""
+
+        contrato_nome = str(row[1]).strip() if len(row) > 1 else ""
         centro_servico = str(row[2]).strip() if len(row) > 2 else ""
-        responsavel    = str(row[3]).strip() if len(row) > 3 else ""
+        responsavel = str(row[3]).strip() if len(row) > 3 else ""
+
         if chave not in config_map:
             config_map[chave] = {
                 "contrato_nome": contrato_nome,
                 "centro_servico": centro_servico,
                 "responsavel": responsavel,
             }
+
     return config_map
 
 
@@ -285,14 +369,17 @@ def read_config_map(sheets_service):
 def build_csv_string(rows) -> str:
     sio = StringIO()
     writer = csv.writer(sio, delimiter=";", lineterminator="\n")
+
     for r in rows:
         writer.writerow(r)
+
     text = sio.getvalue()
     sio.close()
+
     return text
 
 
-# =============== DRIVE (UPLOAD/UPDATE DIRETO) ===============
+# =============== DRIVE ===============
 
 def _escape_drive_q(s: str) -> str:
     return s.replace("\\", "\\\\").replace("'", "\\'")
@@ -300,9 +387,12 @@ def _escape_drive_q(s: str) -> str:
 
 def list_files_same_name_in_folder(drive_service, folder_id: str, filename: str):
     fn = _escape_drive_q(filename)
+
     q = f"'{folder_id}' in parents and trashed = false and name = '{fn}'"
+
     out = []
     page_token = None
+
     while True:
         resp = drive_service.files().list(
             q=q,
@@ -313,10 +403,14 @@ def list_files_same_name_in_folder(drive_service, folder_id: str, filename: str)
             pageSize=1000,
             pageToken=page_token,
         ).execute()
+
         out.extend(resp.get("files", []))
+
         page_token = resp.get("nextPageToken")
+
         if not page_token:
             break
+
     return out
 
 
@@ -327,7 +421,9 @@ def upload_csv_to_drive(drive_service, csv_text: str, filename: str, folder_id: 
             fields="id, name, mimeType",
             supportsAllDrives=True,
         ).execute()
+
         print(f"📁 Pasta encontrada no Drive: {folder.get('name')} ({folder.get('id')})")
+
     except HttpError as e:
         print(f"❌ Não foi possível acessar a pasta {folder_id}.")
         print(f"   Detalhes: {e}")
@@ -342,18 +438,25 @@ def upload_csv_to_drive(drive_service, csv_text: str, filename: str, folder_id: 
     if not existing:
         try:
             created = drive_service.files().create(
-                body={"name": filename, "mimeType": "text/csv", "parents": [folder_id]},
+                body={
+                    "name": filename,
+                    "mimeType": "text/csv",
+                    "parents": [folder_id],
+                },
                 media_body=media,
                 fields="id, webViewLink, modifiedTime",
                 supportsAllDrives=True,
             ).execute()
+
             print(f"✅ Criado no Drive: {filename}")
             print(f"   ID: {created.get('id')}")
             print(f"   Link: {created.get('webViewLink')}")
             print(f"   🕒 modifiedTime: {created.get('modifiedTime')}")
+
         except HttpError as e:
             print(f"❌ Erro ao criar arquivo '{filename}' no Drive.")
             print(f"   Detalhes: {e}")
+
         return
 
     main = existing[0]
@@ -366,30 +469,42 @@ def upload_csv_to_drive(drive_service, csv_text: str, filename: str, folder_id: 
             fields="id, webViewLink, modifiedTime",
             supportsAllDrives=True,
         ).execute()
+
         print(f"♻️ Atualizado no Drive (substituído): {filename}")
         print(f"   ID: {updated.get('id')}")
         print(f"   Link: {updated.get('webViewLink')}")
         print(f"   🕒 modifiedTime: {updated.get('modifiedTime')}")
+
     except HttpError as e:
         msg = str(e)
+
         if "File not found" in msg or "notFound" in msg:
             print("⚠️ Arquivo listado mas não encontrado no update. Criando um novo do zero...")
+
             bio.seek(0)
             media2 = MediaIoBaseUpload(bio, mimetype="text/csv", resumable=True)
+
             try:
                 created = drive_service.files().create(
-                    body={"name": filename, "mimeType": "text/csv", "parents": [folder_id]},
+                    body={
+                        "name": filename,
+                        "mimeType": "text/csv",
+                        "parents": [folder_id],
+                    },
                     media_body=media2,
                     fields="id, webViewLink, modifiedTime",
                     supportsAllDrives=True,
                 ).execute()
+
                 print(f"✅ Recriado no Drive: {filename}")
                 print(f"   ID: {created.get('id')}")
                 print(f"   Link: {created.get('webViewLink')}")
                 print(f"   🕒 modifiedTime: {created.get('modifiedTime')}")
+
             except HttpError as e2:
                 print(f"❌ Erro ao recriar arquivo '{filename}' no Drive.")
                 print(f"   Detalhes: {e2}")
+
         else:
             print(f"❌ Erro ao atualizar arquivo existente '{filename}' (ID {file_id}).")
             print(f"   Detalhes: {e}")
@@ -404,8 +519,37 @@ def montar_primeiro_csv():
     carteira_b, carteira_info = read_carteira_info(sheets_service)
 
     print("🔄 Lendo base9 excluídas (OBRA RETIRADA, CONCLUÍDA, sem AX/AY)...")
-    set_base9_excluidas = read_carteira_base9_excluidas(sheets_service)
+    exclusoes_info = read_carteira_base9_excluidas(sheets_service)
+    set_base9_excluidas = set(exclusoes_info.keys())
+
     print(f"   Base9 excluídas: {len(set_base9_excluidas)}")
+
+    if LOGAR_EXCLUSOES_DETALHADO and exclusoes_info:
+        print("📋 Detalhamento das bases excluídas:")
+
+        itens = sorted(exclusoes_info.items(), key=lambda x: x[0])
+
+        if LIMITE_LOG_EXCLUSOES is not None:
+            itens_log = itens[:LIMITE_LOG_EXCLUSOES]
+        else:
+            itens_log = itens
+
+        for base9, info_exc in itens_log:
+            motivos_txt = " | ".join(sorted(info_exc["motivos"]))
+            codigo_original = info_exc.get("codigo_original", "")
+            linha_carteira = info_exc.get("linha_carteira", "")
+
+            print(
+                f"   🚫 Base: {base9} | "
+                f"Código Carteira: {codigo_original} | "
+                f"Linha Carteira: {linha_carteira} | "
+                f"Motivo(s): {motivos_txt}"
+            )
+
+        if LIMITE_LOG_EXCLUSOES is not None and len(itens) > LIMITE_LOG_EXCLUSOES:
+            print(
+                f"   ... (+{len(itens) - LIMITE_LOG_EXCLUSOES} bases excluídas não exibidas no log)"
+            )
 
     print("🔄 Lendo Config (lookup normalizado)...")
     config_map = read_config_map(sheets_service)
@@ -414,7 +558,11 @@ def montar_primeiro_csv():
     print("🔄 Lendo BD_Obras_GPM (A e B) e ATIVIDADES (K)...")
     obras_b = read_single_column(sheets_service, ID_OBRAS_GPM, "BD_Obras_GPM!B2:B")
     obras_a = read_single_column(sheets_service, ID_OBRAS_GPM, "BD_Obras_GPM!A2:A")
-    ativ_k = read_single_column(sheets_service, ID_ATIVIDADES, "ATIVIDADES_POR_PONTO_BASE!K2:K")
+    ativ_k = read_single_column(
+        sheets_service,
+        ID_ATIVIDADES,
+        "ATIVIDADES_POR_PONTO_BASE!K2:K"
+    )
 
     set_obras_b = set(obras_b)
     set_obras_a = set(obras_a)
@@ -423,52 +571,75 @@ def montar_primeiro_csv():
     print(f"   Bases válidas (Carteira∩Obras.B): {len(bases_validas)}")
 
     print("🧮 Parte 1: criando sufixos que faltam (_VIST, _P0, _LPT)...")
+
     sufixos = ["_VIST", "_P0", "_LPT"]
     criados = []
     criados_set = set()
+
     for cod_base in carteira_b:
         if cod_base not in bases_validas:
             continue
+
         for suf in sufixos:
             codigo_completo = f"{cod_base}{suf}"
+
             if codigo_completo in set_obras_a:
                 continue
+
             if codigo_completo in criados_set:
                 continue
+
             criados.append(codigo_completo)
             criados_set.add(codigo_completo)
+
     print(f"   Parte 1: {len(criados)} códigos criados")
 
     print("🧮 Parte 2: incluindo projetos existentes em ATIVIDADES.K que não estão em Obras.A (sem repetição)...")
+
     faltantes_ativ = []
     faltantes_ativ_set = set()
+
     for cod in ativ_k:
         if cod is None:
             continue
+
         cod = str(cod).strip()
+
         if cod == "":
             continue
+
         if cod in faltantes_ativ_set:
             continue
+
         if cod in set_obras_a:
             continue
+
         base9 = cod[:9]
+
         if base9 not in carteira_info:
             continue
+
         faltantes_ativ.append(cod)
         faltantes_ativ_set.add(cod)
-    print(f"   Parte 2: {len(faltantes_ativ)} códigos únicos vindos de ATIVIDADES.K e ausentes em Obras.A")
+
+    print(
+        f"   Parte 2: {len(faltantes_ativ)} códigos únicos vindos de "
+        f"ATIVIDADES.K e ausentes em Obras.A"
+    )
 
     codigos_final = []
     codigos_final_set = set()
+
     for c in criados:
         if c not in codigos_final_set:
             codigos_final.append(c)
             codigos_final_set.add(c)
+
     for c in faltantes_ativ:
         if c not in codigos_final_set:
             codigos_final.append(c)
             codigos_final_set.add(c)
+
     print(f"   Total de códigos para CSV (Parte1 + Parte2): {len(codigos_final)}")
 
     linhas_csv = [CSV_HEADER]
@@ -477,31 +648,48 @@ def montar_primeiro_csv():
     removidos_excluidas = 0
     config_nao_encontrada = 0
 
+    print("🧹 Aplicando filtros finais e montando linhas do CSV...")
+
     for cod in codigos_final:
         base9 = cod[:9]
+
         if base9 in set_base9_excluidas:
             removidos_excluidas += 1
+
+            info_exc = exclusoes_info.get(base9, {})
+            motivos = info_exc.get("motivos", set())
+            motivos_txt = " | ".join(sorted(motivos)) if motivos else "Motivo não identificado"
+
+            print(
+                f"🚫 Removido do CSV final: {cod} | "
+                f"Base: {base9} | "
+                f"Motivo(s): {motivos_txt}"
+            )
+
             continue
 
         info = carteira_info.get(base9, {})
-        titulo    = info.get("titulo", "")
+
+        titulo = info.get("titulo", "")
         municipio = info.get("municipio", "")
-        w_raw     = info.get("w", "")
-        w_key     = normalizar_chave(w_raw)
+        w_raw = info.get("w", "")
+        w_key = normalizar_chave(w_raw)
         tipo_obra = info.get("tipo_obra", "")
-        natureza  = info.get("natureza", "")
-        lat       = info.get("lat", "")
-        lon       = info.get("lon", "")
+        natureza = info.get("natureza", "")
+        lat = info.get("lat", "")
+        lon = info.get("lon", "")
 
         conf = config_map.get(w_key, {})
+
         if not conf and w_key:
             config_nao_encontrada += 1
-        contrato_nome  = conf.get("contrato_nome", "")
-        centro_servico = conf.get("centro_servico", "")
-        responsavel    = conf.get("responsavel", "")
 
-        ot_principal   = base9
-        tipo_servico   = "OBRAS CCM"
+        contrato_nome = conf.get("contrato_nome", "")
+        centro_servico = conf.get("centro_servico", "")
+        responsavel = conf.get("responsavel", "")
+
+        ot_principal = base9
+        tipo_servico = "OBRAS CCM"
         obriga_vistoria = "SIM" if cod.endswith("_VIST") else "NÃO"
         status = "Recebida" if (cod.endswith("_VIST") or cod.endswith("_LPT")) else "Em execução"
 
@@ -535,8 +723,14 @@ def montar_primeiro_csv():
     print(f"   Total final de linhas no CSV (incluindo cabeçalho): {len(linhas_csv)}")
 
     csv_text = build_csv_string(linhas_csv)
+
     print("💾 CSV gerado em memória. Enviando direto para o Drive...")
-    upload_csv_to_drive(drive_service, csv_text, CSV_FIXED_NAME, DRIVE_FOLDER_ID)
+    upload_csv_to_drive(
+        drive_service,
+        csv_text,
+        CSV_FIXED_NAME,
+        DRIVE_FOLDER_ID
+    )
 
 
 if __name__ == "__main__":
