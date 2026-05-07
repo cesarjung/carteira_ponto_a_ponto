@@ -3,17 +3,25 @@
 Script para gerar o 1º CSV e enviar para o Google Drive, SEM salvar arquivo local.
 
 Regras lógicas:
-1) bases_validas = Carteira!B6:B ∩ BD_Obras_GPM!B2:B
-2) Parte 1: códigos <base9>_VIST, _P0, _LPT que não existam em BD_Obras_GPM!A2:A
-3) Parte 2: códigos de ATIVIDADES_POR_PONTO_BASE!K2:K que não estejam em Obras.A
-4) Exclusões por Carteira (D/U/AX/AY), com log detalhado e CSV de auditoria
-5) Lookup Config normalizado
-6) Encoding utf-8-sig para Excel não quebrar acentos ("NÃO" etc.)
-7) Envia DIRETO para a pasta do Drive
-
-Arquivos gerados no Drive:
-- modelo_importar_obras_ponto.csv
-- obras_excluidas_import_gpm.csv
+1) Lê todas as obras da Carteira
+2) Exclui obras não aptas conforme Carteira:
+   - Carteira!D = OBRA RETIRADA
+   - Carteira!U = CONCLUÍDA
+   - Carteira!AX vazia
+   - Carteira!AY vazia
+3) Para toda obra apta da Carteira, cria os pontos:
+   - _VIST
+   - _P0
+   - _LPT
+   desde que ainda não existam em BD_Obras_GPM!A
+4) Também inclui códigos de ATIVIDADES_POR_PONTO_BASE!K2:K que não existam em BD_Obras_GPM!A
+5) Gera CSV principal:
+   - modelo_importar_obras_ponto.csv
+6) Gera CSV de auditoria das obras excluídas:
+   - obras_excluidas_import_gpm.csv
+7) Lookup Config normalizado
+8) Encoding utf-8-sig para Excel não quebrar acentos
+9) Envia DIRETO para a pasta do Drive
 
 AJUSTE PARA GITHUB:
 - Lê credenciais do Secret GOOGLE_CREDENTIALS (JSON) se existir
@@ -104,14 +112,17 @@ LIMITE_LOG_EXCLUSOES = 300
 def _load_credentials():
     """
     Prioridade:
-    1) GOOGLE_CREDENTIALS (JSON inteiro em env/secret)
+    1) GOOGLE_CREDENTIALS, com JSON inteiro em env/secret
     2) credenciais.json local
     """
     env_json = os.environ.get("GOOGLE_CREDENTIALS", "").strip()
 
     if env_json:
         info = json.loads(env_json)
-        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        return service_account.Credentials.from_service_account_info(
+            info,
+            scopes=SCOPES
+        )
 
     return service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
@@ -119,7 +130,7 @@ def _load_credentials():
     )
 
 
-# =============== NORMALIZAÇÃO DE CHAVES ===============
+# =============== NORMALIZAÇÃO ===============
 
 def normalizar_chave(valor) -> str:
     if valor is None:
@@ -152,7 +163,10 @@ def read_single_column(sheets_service, spreadsheet_id: str, range_a1: str):
     result = (
         sheets_service.spreadsheets()
         .values()
-        .get(spreadsheetId=spreadsheet_id, range=range_a1)
+        .get(
+            spreadsheetId=spreadsheet_id,
+            range=range_a1
+        )
         .execute()
     )
 
@@ -173,20 +187,23 @@ def read_single_column(sheets_service, spreadsheet_id: str, range_a1: str):
 
 def read_carteira_info(sheets_service):
     ranges = [
-        "Carteira!B6:B",
-        "Carteira!AA6:AA",
-        "Carteira!Y6:Y",
-        "Carteira!W6:W",
-        "Carteira!Z6:Z",
-        "Carteira!BX6:BX",
-        "Carteira!AX6:AX",
-        "Carteira!AY6:AY",
+        "Carteira!B6:B",    # 0 - Código/base da obra
+        "Carteira!AA6:AA",  # 1 - Título
+        "Carteira!Y6:Y",    # 2 - Município
+        "Carteira!W6:W",    # 3 - Chave Config
+        "Carteira!Z6:Z",    # 4 - Tipo de obra
+        "Carteira!BX6:BX",  # 5 - Natureza
+        "Carteira!AX6:AX",  # 6 - Latitude
+        "Carteira!AY6:AY",  # 7 - Longitude
     ]
 
     resp = (
         sheets_service.spreadsheets()
         .values()
-        .batchGet(spreadsheetId=ID_CARTEIRA, ranges=ranges)
+        .batchGet(
+            spreadsheetId=ID_CARTEIRA,
+            ranges=ranges
+        )
         .execute()
     )
 
@@ -253,13 +270,13 @@ def read_carteira_base9_excluidas(sheets_service):
     """
     Lê a Carteira e identifica quais bases devem ser excluídas do CSV final.
 
-    Critérios:
+    Critérios atuais:
     - Carteira!D = OBRA RETIRADA
     - Carteira!U = CONCLUÍDA
     - Carteira!AX vazia
     - Carteira!AY vazia
 
-    Retorna:
+    Retorno:
     {
         "B-1250031": {
             "codigo_original": "B-1250031",
@@ -284,7 +301,10 @@ def read_carteira_base9_excluidas(sheets_service):
     resp = (
         sheets_service.spreadsheets()
         .values()
-        .batchGet(spreadsheetId=ID_CARTEIRA, ranges=ranges)
+        .batchGet(
+            spreadsheetId=ID_CARTEIRA,
+            ranges=ranges
+        )
         .execute()
     )
 
@@ -355,7 +375,10 @@ def read_config_map(sheets_service):
     result = (
         sheets_service.spreadsheets()
         .values()
-        .get(spreadsheetId=ID_CARTEIRA, range="Config!L2:O")
+        .get(
+            spreadsheetId=ID_CARTEIRA,
+            range="Config!L2:O"
+        )
         .execute()
     )
 
@@ -527,7 +550,7 @@ def upload_csv_to_drive(drive_service, csv_text: str, filename: str, folder_id: 
         msg = str(e)
 
         if "File not found" in msg or "notFound" in msg:
-            print("⚠️ Arquivo listado mas não encontrado no update. Criando um novo do zero...")
+            print("⚠️ Arquivo listado mas não encontrado no update. Criando novo arquivo...")
 
             bio.seek(0)
             media2 = MediaIoBaseUpload(bio, mimetype="text/csv", resumable=True)
@@ -554,7 +577,7 @@ def upload_csv_to_drive(drive_service, csv_text: str, filename: str, folder_id: 
                 print(f"   Detalhes: {e2}")
 
         else:
-            print(f"❌ Erro ao atualizar arquivo existente '{filename}' (ID {file_id}).")
+            print(f"❌ Erro ao atualizar arquivo existente '{filename}' ID {file_id}.")
             print(f"   Detalhes: {e}")
 
 
@@ -565,6 +588,7 @@ def montar_primeiro_csv():
 
     print("🔄 Lendo dados da Carteira...")
     carteira_b, carteira_info = read_carteira_info(sheets_service)
+    print(f"   Linhas/códigos lidos em Carteira!B: {len(carteira_b)}")
 
     print("🔄 Lendo base9 excluídas (OBRA RETIRADA, CONCLUÍDA, sem AX/AY)...")
     exclusoes_info = read_carteira_base9_excluidas(sheets_service)
@@ -601,11 +625,21 @@ def montar_primeiro_csv():
 
     print("🔄 Lendo Config (lookup normalizado)...")
     config_map = read_config_map(sheets_service)
-    print(f"   Chaves Config carregadas (normalizadas): {len(config_map)}")
+    print(f"   Chaves Config carregadas normalizadas: {len(config_map)}")
 
     print("🔄 Lendo BD_Obras_GPM (A e B) e ATIVIDADES (K)...")
-    obras_b = read_single_column(sheets_service, ID_OBRAS_GPM, "BD_Obras_GPM!B2:B")
-    obras_a = read_single_column(sheets_service, ID_OBRAS_GPM, "BD_Obras_GPM!A2:A")
+    obras_b = read_single_column(
+        sheets_service,
+        ID_OBRAS_GPM,
+        "BD_Obras_GPM!B2:B"
+    )
+
+    obras_a = read_single_column(
+        sheets_service,
+        ID_OBRAS_GPM,
+        "BD_Obras_GPM!A2:A"
+    )
+
     ativ_k = read_single_column(
         sheets_service,
         ID_ATIVIDADES,
@@ -615,23 +649,63 @@ def montar_primeiro_csv():
     set_obras_b = set(obras_b)
     set_obras_a = set(obras_a)
 
-    bases_validas = set(carteira_b).intersection(set_obras_b)
-    print(f"   Bases válidas (Carteira∩Obras.B): {len(bases_validas)}")
+    print(f"   Projetos existentes em BD_Obras_GPM!A: {len(set_obras_a)}")
+    print(f"   Bases existentes em BD_Obras_GPM!B: {len(set_obras_b)}")
+    print(f"   Códigos lidos em ATIVIDADES_POR_PONTO_BASE!K: {len(ativ_k)}")
 
-    print("🧮 Parte 1: criando sufixos que faltam (_VIST, _P0, _LPT)...")
+    print("🧮 Parte 1: criando sufixos que faltam (_VIST, _P0, _LPT) para TODAS as obras aptas da Carteira...")
 
     sufixos = ["_VIST", "_P0", "_LPT"]
     criados = []
     criados_set = set()
 
+    bases_carteira_unicas = []
+    bases_carteira_set = set()
+
     for cod_base in carteira_b:
-        if cod_base not in bases_validas:
+        cod_base = str(cod_base).strip()
+
+        if cod_base == "":
             continue
+
+        if cod_base in bases_carteira_set:
+            continue
+
+        bases_carteira_unicas.append(cod_base)
+        bases_carteira_set.add(cod_base)
+
+    print(f"   Bases únicas na Carteira: {len(bases_carteira_unicas)}")
+
+    bases_aptas_carteira = 0
+    bases_nao_aptas_excluidas = 0
+    bases_aptas_existentes_obras_b = 0
+    bases_aptas_nao_existentes_obras_b = 0
+
+    sufixos_ja_existentes = 0
+    sufixos_novos_criados = 0
+
+    for cod_base in bases_carteira_unicas:
+        base9 = cod_base[:9]
+
+        # Se a obra está na lista de exclusão, não cria os sufixos.
+        # Ela aparecerá no CSV de exclusões.
+        if base9 in set_base9_excluidas:
+            bases_nao_aptas_excluidas += 1
+            continue
+
+        bases_aptas_carteira += 1
+
+        if cod_base in set_obras_b:
+            bases_aptas_existentes_obras_b += 1
+        else:
+            bases_aptas_nao_existentes_obras_b += 1
 
         for suf in sufixos:
             codigo_completo = f"{cod_base}{suf}"
 
+            # Se já existe no GPM como projeto completo, não importa de novo.
             if codigo_completo in set_obras_a:
+                sufixos_ja_existentes += 1
                 continue
 
             if codigo_completo in criados_set:
@@ -639,33 +713,52 @@ def montar_primeiro_csv():
 
             criados.append(codigo_completo)
             criados_set.add(codigo_completo)
+            sufixos_novos_criados += 1
 
-    print(f"   Parte 1: {len(criados)} códigos criados")
+    print(f"   Bases aptas na Carteira: {bases_aptas_carteira}")
+    print(f"   Bases não aptas/excluídas: {bases_nao_aptas_excluidas}")
+    print(f"   Bases aptas que JÁ existem em BD_Obras_GPM!B: {bases_aptas_existentes_obras_b}")
+    print(f"   Bases aptas que NÃO existem em BD_Obras_GPM!B: {bases_aptas_nao_existentes_obras_b}")
+    print(f"   Sufixos _VIST/_P0/_LPT já existentes em BD_Obras_GPM!A: {sufixos_ja_existentes}")
+    print(f"   Parte 1: {sufixos_novos_criados} códigos criados")
 
     print("🧮 Parte 2: incluindo projetos existentes em ATIVIDADES.K que não estão em Obras.A (sem repetição)...")
 
     faltantes_ativ = []
     faltantes_ativ_set = set()
 
+    ignorados_ativ_ja_existentes = 0
+    ignorados_ativ_base_fora_carteira = 0
+    ignorados_ativ_vazios = 0
+
     for cod in ativ_k:
         if cod is None:
+            ignorados_ativ_vazios += 1
             continue
 
         cod = str(cod).strip()
 
         if cod == "":
+            ignorados_ativ_vazios += 1
             continue
 
         if cod in faltantes_ativ_set:
             continue
 
         if cod in set_obras_a:
+            ignorados_ativ_ja_existentes += 1
             continue
 
         base9 = cod[:9]
 
         if base9 not in carteira_info:
+            ignorados_ativ_base_fora_carteira += 1
             continue
+
+        if base9 in set_base9_excluidas:
+            # Não adiciona aqui, pois será removido de qualquer forma pelo filtro final.
+            # Mantemos o controle no CSV de exclusões quando passar pelo filtro final.
+            pass
 
         faltantes_ativ.append(cod)
         faltantes_ativ_set.add(cod)
@@ -674,6 +767,9 @@ def montar_primeiro_csv():
         f"   Parte 2: {len(faltantes_ativ)} códigos únicos vindos de "
         f"ATIVIDADES.K e ausentes em Obras.A"
     )
+    print(f"   ATIVIDADES.K ignorados por já existirem em Obras.A: {ignorados_ativ_ja_existentes}")
+    print(f"   ATIVIDADES.K ignorados por base não existir na Carteira: {ignorados_ativ_base_fora_carteira}")
+    print(f"   ATIVIDADES.K ignorados vazios/nulos: {ignorados_ativ_vazios}")
 
     codigos_final = []
     codigos_final_set = set()
@@ -688,7 +784,7 @@ def montar_primeiro_csv():
             codigos_final.append(c)
             codigos_final_set.add(c)
 
-    print(f"   Total de códigos para CSV (Parte1 + Parte2): {len(codigos_final)}")
+    print(f"   Total de códigos para CSV antes dos filtros finais: {len(codigos_final)}")
 
     linhas_csv = [CSV_HEADER]
     hoje_str = datetime.now().strftime("%d/%m/%Y")
@@ -697,7 +793,7 @@ def montar_primeiro_csv():
     config_nao_encontrada = 0
     codigos_removidos_por_base = {}
 
-    print("🧹 Aplicando filtros finais e montando linhas do CSV...")
+    print("🧹 Aplicando filtros finais e montando linhas do CSV principal...")
 
     for cod in codigos_final:
         base9 = cod[:9]
@@ -769,9 +865,9 @@ def montar_primeiro_csv():
             "",
         ])
 
-    print(f"   Linhas removidas por filtros (D/U/AX/AY): {removidos_excluidas}")
-    print(f"   Lookups de Config não encontrados (mesmo normalizando): {config_nao_encontrada}")
-    print(f"   Total final de linhas no CSV principal (incluindo cabeçalho): {len(linhas_csv)}")
+    print(f"   Linhas removidas por filtros D/U/AX/AY: {removidos_excluidas}")
+    print(f"   Lookups de Config não encontrados mesmo normalizando: {config_nao_encontrada}")
+    print(f"   Total final de linhas no CSV principal incluindo cabeçalho: {len(linhas_csv)}")
 
     print("📄 Gerando CSV de auditoria das obras excluídas...")
     linhas_exclusoes_csv = montar_linhas_csv_exclusoes(
@@ -779,7 +875,7 @@ def montar_primeiro_csv():
         codigos_removidos_por_base
     )
 
-    print(f"   Total de linhas no CSV de exclusões (incluindo cabeçalho): {len(linhas_exclusoes_csv)}")
+    print(f"   Total de linhas no CSV de exclusões incluindo cabeçalho: {len(linhas_exclusoes_csv)}")
 
     csv_text = build_csv_string(linhas_csv)
     csv_exclusoes_text = build_csv_string(linhas_exclusoes_csv)
