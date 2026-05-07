@@ -17,11 +17,16 @@ Regras lógicas:
 4) Também inclui códigos de ATIVIDADES_POR_PONTO_BASE!K2:K que não existam em BD_Obras_GPM!A
 5) Gera CSV principal:
    - modelo_importar_obras_ponto.csv
-6) Gera CSV de auditoria das obras excluídas:
+6) Gera CSV de auditoria das obras que NÃO entraram no CSV principal:
    - obras_excluidas_import_gpm.csv
-7) Lookup Config normalizado
-8) Encoding utf-8-sig para Excel não quebrar acentos
-9) Envia DIRETO para a pasta do Drive
+
+O CSV de auditoria inclui:
+- Obras excluídas pela Carteira
+- Obras aptas, mas sem novos códigos para importar
+- Motivo técnico da não geração
+- Situação em BD_Obras_GPM!A
+- Situação em BD_Obras_GPM!B
+- Situação em ATIVIDADES_POR_PONTO_BASE!K
 
 AJUSTE PARA GITHUB:
 - Lê credenciais do Secret GOOGLE_CREDENTIALS (JSON) se existir
@@ -89,17 +94,30 @@ CSV_EXCLUSOES_HEADER = [
     "Base Obra",
     "Codigo Carteira",
     "Linha Carteira",
-    "Motivos Exclusao",
+    "Classificacao Auditoria",
+    "Motivo Principal",
+    "Motivos Detalhados",
     "Carteira D",
     "Carteira U",
     "Latitude AX",
     "Longitude AY",
-    "Qtd Codigos Removidos do CSV Final",
-    "Codigos Removidos do CSV Final",
+    "Existe em BD_Obras_GPM!B?",
+    "Qtd Projetos Existentes em BD_Obras_GPM!A",
+    "Projetos Existentes em BD_Obras_GPM!A",
+    "Sufixos Padrao Existentes",
+    "Sufixos Padrao Faltantes",
+    "Qtd Projetos em ATIVIDADES.K",
+    "Projetos em ATIVIDADES.K",
+    "Qtd Projetos Novos em ATIVIDADES.K Ausentes em Obras.A",
+    "Projetos Novos em ATIVIDADES.K Ausentes em Obras.A",
+    "Qtd Codigos Gerados no CSV Principal",
+    "Codigos Gerados no CSV Principal",
+    "Qtd Codigos Removidos por Exclusao",
+    "Codigos Removidos por Exclusao",
 ]
 
 
-# =============== LOG DE EXCLUSÕES ===============
+# =============== LOG ===============
 
 LOGAR_EXCLUSOES_DETALHADO = True
 
@@ -266,28 +284,17 @@ def read_carteira_info(sheets_service):
     return lista_carteira_b, mapa_info
 
 
-def read_carteira_base9_excluidas(sheets_service):
+def read_carteira_auditoria(sheets_service):
     """
-    Lê a Carteira e identifica quais bases devem ser excluídas do CSV final.
+    Lê a Carteira e retorna:
+    1) auditoria_carteira: todas as bases encontradas
+    2) exclusoes_info: apenas bases excluídas pelas regras da Carteira
 
-    Critérios atuais:
+    Critérios atuais de exclusão:
     - Carteira!D = OBRA RETIRADA
     - Carteira!U = CONCLUÍDA
     - Carteira!AX vazia
     - Carteira!AY vazia
-
-    Retorno:
-    {
-        "B-1250031": {
-            "codigo_original": "B-1250031",
-            "linha_carteira": 123,
-            "motivos": set([...]),
-            "status_d": "...",
-            "status_u": "...",
-            "lat": "...",
-            "lon": "..."
-        }
-    }
     """
 
     ranges = [
@@ -324,7 +331,8 @@ def read_carteira_base9_excluidas(sheets_service):
             return ""
         return str(row[0]).strip()
 
-    exclusoes = {}
+    auditoria_carteira = {}
+    exclusoes_info = {}
 
     for i in range(len(col_b)):
         b = get_val(col_b, i)
@@ -353,9 +361,23 @@ def read_carteira_base9_excluidas(sheets_service):
         if lon == "":
             motivos.append("Carteira!AY sem longitude")
 
+        if base9 not in auditoria_carteira:
+            auditoria_carteira[base9] = {
+                "codigo_original": b,
+                "linha_carteira": i + 6,
+                "motivos_exclusao": set(),
+                "status_d": status_d,
+                "status_u": status_u,
+                "lat": lat,
+                "lon": lon,
+            }
+
+        for motivo in motivos:
+            auditoria_carteira[base9]["motivos_exclusao"].add(motivo)
+
         if motivos:
-            if base9 not in exclusoes:
-                exclusoes[base9] = {
+            if base9 not in exclusoes_info:
+                exclusoes_info[base9] = {
                     "codigo_original": b,
                     "linha_carteira": i + 6,
                     "motivos": set(),
@@ -366,9 +388,9 @@ def read_carteira_base9_excluidas(sheets_service):
                 }
 
             for motivo in motivos:
-                exclusoes[base9]["motivos"].add(motivo)
+                exclusoes_info[base9]["motivos"].add(motivo)
 
-    return exclusoes
+    return auditoria_carteira, exclusoes_info
 
 
 def read_config_map(sheets_service):
@@ -424,28 +446,169 @@ def build_csv_string(rows) -> str:
     return text
 
 
-def montar_linhas_csv_exclusoes(exclusoes_info, codigos_removidos_por_base):
+def montar_mapa_projetos_por_base(lista_codigos):
+    mapa = {}
+
+    for cod in lista_codigos:
+        cod = str(cod).strip()
+
+        if cod == "":
+            continue
+
+        base9 = cod[:9]
+        mapa.setdefault(base9, set()).add(cod)
+
+    return mapa
+
+
+def montar_linhas_csv_exclusoes(
+    auditoria_carteira,
+    exclusoes_info,
+    set_obras_b,
+    projetos_obras_a_por_base,
+    projetos_ativ_k_por_base,
+    projetos_ativ_k_novos_por_base,
+    codigos_gerados_csv_final_por_base,
+    codigos_removidos_por_base
+):
+    """
+    Monta auditoria das obras que NÃO entraram no CSV principal.
+
+    Inclui:
+    1) Bases excluídas pela Carteira
+    2) Bases aptas que não geraram nenhum código no CSV principal
+    """
+
     linhas = [CSV_EXCLUSOES_HEADER]
 
-    for base9, info_exc in sorted(exclusoes_info.items(), key=lambda x: x[0]):
-        motivos = info_exc.get("motivos", set())
-        motivos_txt = " | ".join(sorted(motivos)) if motivos else ""
+    total_excluidas_carteira = 0
+    total_aptas_nao_geradas = 0
 
-        codigos_removidos = codigos_removidos_por_base.get(base9, [])
-        codigos_removidos = sorted(set(codigos_removidos))
+    for base9, info_cart in sorted(auditoria_carteira.items(), key=lambda x: x[0]):
+        codigos_gerados = sorted(codigos_gerados_csv_final_por_base.get(base9, set()))
+
+        # Se gerou algo no CSV principal e não foi excluída, não entra no arquivo de auditoria.
+        if base9 not in exclusoes_info and codigos_gerados:
+            continue
+
+        codigo_original = info_cart.get("codigo_original", "")
+        linha_carteira = info_cart.get("linha_carteira", "")
+        status_d = info_cart.get("status_d", "")
+        status_u = info_cart.get("status_u", "")
+        lat = info_cart.get("lat", "")
+        lon = info_cart.get("lon", "")
+
+        existe_obras_b = "SIM" if base9 in set_obras_b or codigo_original in set_obras_b else "NÃO"
+
+        projetos_obras_a = sorted(projetos_obras_a_por_base.get(base9, set()))
+        projetos_ativ_k = sorted(projetos_ativ_k_por_base.get(base9, set()))
+        projetos_ativ_k_novos = sorted(projetos_ativ_k_novos_por_base.get(base9, set()))
+        codigos_removidos = sorted(set(codigos_removidos_por_base.get(base9, [])))
+
+        sufixos_padrao = [
+            f"{codigo_original}_VIST",
+            f"{codigo_original}_P0",
+            f"{codigo_original}_LPT",
+        ]
+
+        sufixos_existentes = [c for c in sufixos_padrao if c in projetos_obras_a]
+        sufixos_faltantes = [c for c in sufixos_padrao if c not in projetos_obras_a]
+
+        motivos_detalhados = []
+        classificacao = ""
+        motivo_principal = ""
+
+        if base9 in exclusoes_info:
+            total_excluidas_carteira += 1
+            classificacao = "EXCLUIDA_CARTEIRA"
+            motivos_exclusao = exclusoes_info[base9].get("motivos", set())
+            motivo_principal = "Obra não apta conforme regras da Carteira"
+            motivos_detalhados.extend(sorted(motivos_exclusao))
+
+            if codigos_removidos:
+                motivos_detalhados.append(
+                    "Havia códigos candidatos para importação, mas foram removidos por regra de exclusão da Carteira"
+                )
+
+        else:
+            total_aptas_nao_geradas += 1
+            classificacao = "APTA_NAO_GERADA"
+
+            if len(sufixos_faltantes) == 0 and len(projetos_ativ_k_novos) == 0:
+                motivo_principal = (
+                    "Obra apta, mas sem novos códigos para importar"
+                )
+                motivos_detalhados.append(
+                    "_VIST, _P0 e _LPT já existem em BD_Obras_GPM!A"
+                )
+                motivos_detalhados.append(
+                    "Não há projetos novos em ATIVIDADES_POR_PONTO_BASE!K ausentes em BD_Obras_GPM!A"
+                )
+
+            elif len(sufixos_faltantes) > 0 and len(codigos_gerados) == 0:
+                motivo_principal = (
+                    "Obra apta com sufixos faltantes, mas não gerou código - revisar lógica"
+                )
+                motivos_detalhados.append(
+                    "Existem sufixos padrão faltantes em BD_Obras_GPM!A"
+                )
+
+            elif len(projetos_ativ_k_novos) > 0 and len(codigos_gerados) == 0:
+                motivo_principal = (
+                    "Obra apta com projetos novos no orçamento, mas não gerou código - revisar lógica"
+                )
+                motivos_detalhados.append(
+                    "Existem projetos em ATIVIDADES.K ausentes em BD_Obras_GPM!A"
+                )
+
+            else:
+                motivo_principal = (
+                    "Obra apta não entrou no CSV principal por regra técnica não classificada"
+                )
+                motivos_detalhados.append(
+                    "Revisar BD_Obras_GPM!A, BD_Obras_GPM!B e ATIVIDADES.K"
+                )
+
+            if existe_obras_b == "NÃO":
+                motivos_detalhados.append(
+                    "Base não encontrada em BD_Obras_GPM!B"
+                )
+
+            if len(projetos_ativ_k) == 0:
+                motivos_detalhados.append(
+                    "Nenhum projeto encontrado em ATIVIDADES_POR_PONTO_BASE!K para esta base"
+                )
 
         linhas.append([
             base9,
-            info_exc.get("codigo_original", ""),
-            info_exc.get("linha_carteira", ""),
-            motivos_txt,
-            info_exc.get("status_d", ""),
-            info_exc.get("status_u", ""),
-            info_exc.get("lat", ""),
-            info_exc.get("lon", ""),
+            codigo_original,
+            linha_carteira,
+            classificacao,
+            motivo_principal,
+            " | ".join(motivos_detalhados),
+            status_d,
+            status_u,
+            lat,
+            lon,
+            existe_obras_b,
+            len(projetos_obras_a),
+            " | ".join(projetos_obras_a),
+            " | ".join(sufixos_existentes),
+            " | ".join(sufixos_faltantes),
+            len(projetos_ativ_k),
+            " | ".join(projetos_ativ_k),
+            len(projetos_ativ_k_novos),
+            " | ".join(projetos_ativ_k_novos),
+            len(codigos_gerados),
+            " | ".join(codigos_gerados),
             len(codigos_removidos),
             " | ".join(codigos_removidos),
         ])
+
+    print("📊 Resumo auditoria de obras não importadas:")
+    print(f"   Obras excluídas pela Carteira: {total_excluidas_carteira}")
+    print(f"   Obras aptas mas não geradas: {total_aptas_nao_geradas}")
+    print(f"   Total no CSV de auditoria sem cabeçalho: {len(linhas) - 1}")
 
     return linhas
 
@@ -590,14 +753,15 @@ def montar_primeiro_csv():
     carteira_b, carteira_info = read_carteira_info(sheets_service)
     print(f"   Linhas/códigos lidos em Carteira!B: {len(carteira_b)}")
 
-    print("🔄 Lendo base9 excluídas (OBRA RETIRADA, CONCLUÍDA, sem AX/AY)...")
-    exclusoes_info = read_carteira_base9_excluidas(sheets_service)
+    print("🔄 Lendo auditoria da Carteira e bases excluídas...")
+    auditoria_carteira, exclusoes_info = read_carteira_auditoria(sheets_service)
     set_base9_excluidas = set(exclusoes_info.keys())
 
-    print(f"   Base9 excluídas: {len(set_base9_excluidas)}")
+    print(f"   Bases únicas auditadas na Carteira: {len(auditoria_carteira)}")
+    print(f"   Base9 excluídas pela Carteira: {len(set_base9_excluidas)}")
 
     if LOGAR_EXCLUSOES_DETALHADO and exclusoes_info:
-        print("📋 Detalhamento das bases excluídas:")
+        print("📋 Detalhamento das bases excluídas pela Carteira:")
 
         itens = sorted(exclusoes_info.items(), key=lambda x: x[0])
 
@@ -649,6 +813,23 @@ def montar_primeiro_csv():
     set_obras_b = set(obras_b)
     set_obras_a = set(obras_a)
 
+    projetos_obras_a_por_base = montar_mapa_projetos_por_base(obras_a)
+    projetos_ativ_k_por_base = montar_mapa_projetos_por_base(ativ_k)
+
+    projetos_ativ_k_novos_por_base = {}
+
+    for cod in ativ_k:
+        cod = str(cod).strip()
+
+        if cod == "":
+            continue
+
+        if cod in set_obras_a:
+            continue
+
+        base9 = cod[:9]
+        projetos_ativ_k_novos_por_base.setdefault(base9, set()).add(cod)
+
     print(f"   Projetos existentes em BD_Obras_GPM!A: {len(set_obras_a)}")
     print(f"   Bases existentes em BD_Obras_GPM!B: {len(set_obras_b)}")
     print(f"   Códigos lidos em ATIVIDADES_POR_PONTO_BASE!K: {len(ativ_k)}")
@@ -687,15 +868,13 @@ def montar_primeiro_csv():
     for cod_base in bases_carteira_unicas:
         base9 = cod_base[:9]
 
-        # Se a obra está na lista de exclusão, não cria os sufixos.
-        # Ela aparecerá no CSV de exclusões.
         if base9 in set_base9_excluidas:
             bases_nao_aptas_excluidas += 1
             continue
 
         bases_aptas_carteira += 1
 
-        if cod_base in set_obras_b:
+        if cod_base in set_obras_b or base9 in set_obras_b:
             bases_aptas_existentes_obras_b += 1
         else:
             bases_aptas_nao_existentes_obras_b += 1
@@ -703,7 +882,6 @@ def montar_primeiro_csv():
         for suf in sufixos:
             codigo_completo = f"{cod_base}{suf}"
 
-            # Se já existe no GPM como projeto completo, não importa de novo.
             if codigo_completo in set_obras_a:
                 sufixos_ja_existentes += 1
                 continue
@@ -755,11 +933,6 @@ def montar_primeiro_csv():
             ignorados_ativ_base_fora_carteira += 1
             continue
 
-        if base9 in set_base9_excluidas:
-            # Não adiciona aqui, pois será removido de qualquer forma pelo filtro final.
-            # Mantemos o controle no CSV de exclusões quando passar pelo filtro final.
-            pass
-
         faltantes_ativ.append(cod)
         faltantes_ativ_set.add(cod)
 
@@ -792,6 +965,7 @@ def montar_primeiro_csv():
     removidos_excluidas = 0
     config_nao_encontrada = 0
     codigos_removidos_por_base = {}
+    codigos_gerados_csv_final_por_base = {}
 
     print("🧹 Aplicando filtros finais e montando linhas do CSV principal...")
 
@@ -865,17 +1039,25 @@ def montar_primeiro_csv():
             "",
         ])
 
+        codigos_gerados_csv_final_por_base.setdefault(base9, set()).add(cod)
+
     print(f"   Linhas removidas por filtros D/U/AX/AY: {removidos_excluidas}")
     print(f"   Lookups de Config não encontrados mesmo normalizando: {config_nao_encontrada}")
     print(f"   Total final de linhas no CSV principal incluindo cabeçalho: {len(linhas_csv)}")
 
-    print("📄 Gerando CSV de auditoria das obras excluídas...")
+    print("📄 Gerando CSV de auditoria das obras que não entraram no CSV principal...")
     linhas_exclusoes_csv = montar_linhas_csv_exclusoes(
-        exclusoes_info,
-        codigos_removidos_por_base
+        auditoria_carteira=auditoria_carteira,
+        exclusoes_info=exclusoes_info,
+        set_obras_b=set_obras_b,
+        projetos_obras_a_por_base=projetos_obras_a_por_base,
+        projetos_ativ_k_por_base=projetos_ativ_k_por_base,
+        projetos_ativ_k_novos_por_base=projetos_ativ_k_novos_por_base,
+        codigos_gerados_csv_final_por_base=codigos_gerados_csv_final_por_base,
+        codigos_removidos_por_base=codigos_removidos_por_base,
     )
 
-    print(f"   Total de linhas no CSV de exclusões incluindo cabeçalho: {len(linhas_exclusoes_csv)}")
+    print(f"   Total de linhas no CSV de auditoria incluindo cabeçalho: {len(linhas_exclusoes_csv)}")
 
     csv_text = build_csv_string(linhas_csv)
     csv_exclusoes_text = build_csv_string(linhas_exclusoes_csv)
@@ -888,7 +1070,7 @@ def montar_primeiro_csv():
         DRIVE_FOLDER_ID
     )
 
-    print("💾 CSV de obras excluídas gerado em memória. Enviando direto para o Drive...")
+    print("💾 CSV de auditoria gerado em memória. Enviando direto para o Drive...")
     upload_csv_to_drive(
         drive_service,
         csv_exclusoes_text,
