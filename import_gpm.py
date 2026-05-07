@@ -6,12 +6,14 @@ Regras lógicas:
 1) bases_validas = Carteira!B6:B ∩ BD_Obras_GPM!B2:B
 2) Parte 1: códigos <base9>_VIST, _P0, _LPT que não existam em BD_Obras_GPM!A2:A
 3) Parte 2: códigos de ATIVIDADES_POR_PONTO_BASE!K2:K que não estejam em Obras.A
-4) Exclusões por Carteira (D/U/AX/AY), agora com log detalhado do motivo
+4) Exclusões por Carteira (D/U/AX/AY), com log detalhado e CSV de auditoria
 5) Lookup Config normalizado
 6) Encoding utf-8-sig para Excel não quebrar acentos ("NÃO" etc.)
 7) Envia DIRETO para a pasta do Drive
 
-Não é criado nenhum .csv no disco local.
+Arquivos gerados no Drive:
+- modelo_importar_obras_ponto.csv
+- obras_excluidas_import_gpm.csv
 
 AJUSTE PARA GITHUB:
 - Lê credenciais do Secret GOOGLE_CREDENTIALS (JSON) se existir
@@ -47,6 +49,9 @@ ID_ATIVIDADES = "1Ipp454Clq0lKik8G5LjMMmV-8eA0R6if4FGG555K1j8"
 
 DRIVE_FOLDER_ID = "1r2-jH6hF5jtaO7UVq7HnYX9Vquod6YDB"
 
+CSV_FIXED_NAME = "modelo_importar_obras_ponto.csv"
+CSV_EXCLUSOES_FIXED_NAME = "obras_excluidas_import_gpm.csv"
+
 CSV_HEADER = [
     "Projeto",
     "OT Principal",
@@ -72,7 +77,18 @@ CSV_HEADER = [
     "MEDIDOR",
 ]
 
-CSV_FIXED_NAME = "modelo_importar_obras_ponto.csv"
+CSV_EXCLUSOES_HEADER = [
+    "Base Obra",
+    "Codigo Carteira",
+    "Linha Carteira",
+    "Motivos Exclusao",
+    "Carteira D",
+    "Carteira U",
+    "Latitude AX",
+    "Longitude AY",
+    "Qtd Codigos Removidos do CSV Final",
+    "Codigos Removidos do CSV Final",
+]
 
 
 # =============== LOG DE EXCLUSÕES ===============
@@ -80,8 +96,6 @@ CSV_FIXED_NAME = "modelo_importar_obras_ponto.csv"
 LOGAR_EXCLUSOES_DETALHADO = True
 
 # Defina como None para exibir todas as bases excluídas no log.
-# Exemplo:
-# LIMITE_LOG_EXCLUSOES = None
 LIMITE_LOG_EXCLUSOES = 300
 
 
@@ -159,14 +173,14 @@ def read_single_column(sheets_service, spreadsheet_id: str, range_a1: str):
 
 def read_carteira_info(sheets_service):
     ranges = [
-        "Carteira!B6:B",    # 0 - Código/base da obra
-        "Carteira!AA6:AA",  # 1 - Título
-        "Carteira!Y6:Y",    # 2 - Município
-        "Carteira!W6:W",    # 3 - Chave Config
-        "Carteira!Z6:Z",    # 4 - Tipo de obra
-        "Carteira!BX6:BX",  # 5 - Natureza
-        "Carteira!AX6:AX",  # 6 - Latitude
-        "Carteira!AY6:AY",  # 7 - Longitude
+        "Carteira!B6:B",
+        "Carteira!AA6:AA",
+        "Carteira!Y6:Y",
+        "Carteira!W6:W",
+        "Carteira!Z6:Z",
+        "Carteira!BX6:BX",
+        "Carteira!AX6:AX",
+        "Carteira!AY6:AY",
     ]
 
     resp = (
@@ -245,12 +259,16 @@ def read_carteira_base9_excluidas(sheets_service):
     - Carteira!AX vazia
     - Carteira!AY vazia
 
-    Retorna um dicionário:
+    Retorna:
     {
         "B-1250031": {
             "codigo_original": "B-1250031",
             "linha_carteira": 123,
-            "motivos": set([...])
+            "motivos": set([...]),
+            "status_d": "...",
+            "status_u": "...",
+            "lat": "...",
+            "lon": "..."
         }
     }
     """
@@ -321,6 +339,10 @@ def read_carteira_base9_excluidas(sheets_service):
                     "codigo_original": b,
                     "linha_carteira": i + 6,
                     "motivos": set(),
+                    "status_d": status_d,
+                    "status_u": status_u,
+                    "lat": lat,
+                    "lon": lon,
                 }
 
             for motivo in motivos:
@@ -377,6 +399,32 @@ def build_csv_string(rows) -> str:
     sio.close()
 
     return text
+
+
+def montar_linhas_csv_exclusoes(exclusoes_info, codigos_removidos_por_base):
+    linhas = [CSV_EXCLUSOES_HEADER]
+
+    for base9, info_exc in sorted(exclusoes_info.items(), key=lambda x: x[0]):
+        motivos = info_exc.get("motivos", set())
+        motivos_txt = " | ".join(sorted(motivos)) if motivos else ""
+
+        codigos_removidos = codigos_removidos_por_base.get(base9, [])
+        codigos_removidos = sorted(set(codigos_removidos))
+
+        linhas.append([
+            base9,
+            info_exc.get("codigo_original", ""),
+            info_exc.get("linha_carteira", ""),
+            motivos_txt,
+            info_exc.get("status_d", ""),
+            info_exc.get("status_u", ""),
+            info_exc.get("lat", ""),
+            info_exc.get("lon", ""),
+            len(codigos_removidos),
+            " | ".join(codigos_removidos),
+        ])
+
+    return linhas
 
 
 # =============== DRIVE ===============
@@ -647,6 +695,7 @@ def montar_primeiro_csv():
 
     removidos_excluidas = 0
     config_nao_encontrada = 0
+    codigos_removidos_por_base = {}
 
     print("🧹 Aplicando filtros finais e montando linhas do CSV...")
 
@@ -655,6 +704,8 @@ def montar_primeiro_csv():
 
         if base9 in set_base9_excluidas:
             removidos_excluidas += 1
+
+            codigos_removidos_por_base.setdefault(base9, []).append(cod)
 
             info_exc = exclusoes_info.get(base9, {})
             motivos = info_exc.get("motivos", set())
@@ -720,15 +771,32 @@ def montar_primeiro_csv():
 
     print(f"   Linhas removidas por filtros (D/U/AX/AY): {removidos_excluidas}")
     print(f"   Lookups de Config não encontrados (mesmo normalizando): {config_nao_encontrada}")
-    print(f"   Total final de linhas no CSV (incluindo cabeçalho): {len(linhas_csv)}")
+    print(f"   Total final de linhas no CSV principal (incluindo cabeçalho): {len(linhas_csv)}")
+
+    print("📄 Gerando CSV de auditoria das obras excluídas...")
+    linhas_exclusoes_csv = montar_linhas_csv_exclusoes(
+        exclusoes_info,
+        codigos_removidos_por_base
+    )
+
+    print(f"   Total de linhas no CSV de exclusões (incluindo cabeçalho): {len(linhas_exclusoes_csv)}")
 
     csv_text = build_csv_string(linhas_csv)
+    csv_exclusoes_text = build_csv_string(linhas_exclusoes_csv)
 
-    print("💾 CSV gerado em memória. Enviando direto para o Drive...")
+    print("💾 CSV principal gerado em memória. Enviando direto para o Drive...")
     upload_csv_to_drive(
         drive_service,
         csv_text,
         CSV_FIXED_NAME,
+        DRIVE_FOLDER_ID
+    )
+
+    print("💾 CSV de obras excluídas gerado em memória. Enviando direto para o Drive...")
+    upload_csv_to_drive(
+        drive_service,
+        csv_exclusoes_text,
+        CSV_EXCLUSOES_FIXED_NAME,
         DRIVE_FOLDER_ID
     )
 
