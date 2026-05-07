@@ -1,7 +1,9 @@
-name: Pipeline GPM (07h, 12h, 15h)
+name: Pipeline GPM (05h, 07h, 12h, 15h)
 
 on:
   schedule:
+  # 07:00 BRT (UTC-3) -> 10:00 UTC
+    - cron: "0 8 * * *"
     # 07:00 BRT (UTC-3) -> 10:00 UTC
     - cron: "0 10 * * *"
     # 12:00 BRT -> 15:00 UTC
